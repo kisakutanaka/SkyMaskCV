@@ -192,7 +192,7 @@ async function selectSource(i) {
     await video.play().catch(() => {});
   }
 
-  stats.textContent = '—'; acc = 0; n = 0;
+  stats.textContent = '—'; accSeg = accAll = n = 0;
   startLoop();
 }
 
