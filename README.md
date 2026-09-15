@@ -53,10 +53,20 @@ WebGL も WASM も使っていません。
 src/skyMask.ts   すべての処理。純粋関数のみで DOM に依存しない
 index.html       デモページ。canvas の配線と合成だけ
 img/             テストソース
-dist/            tsc の出力（Pages はビルドしないので追跡している）
+dist/            tsc の出力（追跡していない）
 ```
 
 ビルドは `npx -y -p typescript tsc` のみ。バンドラもフレームワークも使いません。
+GitHub Pages へは `.github/workflows/pages.yml` が push のたびにビルドして配信します。
+
+ローカルで動かす場合:
+
+```sh
+npx -y -p typescript tsc
+python3 -m http.server 8766
+```
+
+カメラ入力は HTTPS か localhost でのみ使えます。
 
 ## 既知の限界
 
