@@ -1,0 +1,193 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SkyMask</title>
+<style>
+  body { margin: 0; background: #111; color: #ddd; font: 13px/1.5 system-ui, sans-serif; }
+  header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
+  #stats { font-variant-numeric: tabular-nums; color: #7c7; }
+  .panes { display: flex; gap: 8px; padding: 0 8px 8px; }
+  .pane { flex: 1 1 0; min-width: 0; }
+  .pane h2 { margin: 0 0 4px; font-size: 12px; font-weight: 400; color: #888; }
+  video, img, canvas { width: 100%; display: block; background: #000; }
+  /* 作者スタイルの display:block が UA の [hidden]{display:none} を打ち消すので明示する */
+  [hidden] { display: none !important; }
+  .pane { align-self: flex-start; }
+  select { font: inherit; padding: 3px 6px; }
+</style>
+
+<header>
+  <select id="source"></select>
+  <select id="mode">
+    <option value="kaiju">怪獣合成</option>
+    <option value="fill">空塗りつぶし</option>
+  </select>
+  <input type="color" id="fillColor" value="#ff00ff">
+  <span id="stats">—</span>
+</header>
+
+<div class="panes">
+  <div class="pane">
+    <h2>元映像</h2>
+    <video id="video" muted loop playsinline hidden></video>
+    <img id="still" hidden>
+  </div>
+  <div class="pane"><h2>背景分離</h2><canvas id="out"></canvas></div>
+</div>
+
+<script type="module">
+import { segmentSky } from './dist/skyMask.js';
+
+// テストソース。増やすときはここに1行足すだけ。
+const SOURCES = [
+  { label: '動画 (薄暮・パン)', kind: 'video', src: 'img/IMG_4476.mp4' },
+  { label: '曇天 01',           kind: 'still', src: 'img/cloudy01.png' },
+  { label: '曇天 02',           kind: 'still', src: 'img/cloudy02.png' },
+  { label: 'カメラ',            kind: 'camera' },
+];
+
+// 処理解像度。TS が触るのはこの1枚だけで、縮小も拡大も GPU に任せる。
+const PROC_W = 180, PROC_H = 320;
+
+const video = document.getElementById('video');
+const still = document.getElementById('still');
+const mode = document.getElementById('mode');
+const fillColor = document.getElementById('fillColor');
+const out = document.getElementById('out');
+const outCtx = out.getContext('2d');
+
+const proc = makeCanvas(PROC_W, PROC_H);     // video を縮小して読み出すための作業用
+const maskCv = makeCanvas(PROC_W, PROC_H);   // マスクをアルファとして持つ
+const maskImg = maskCv.ctx.createImageData(PROC_W, PROC_H);
+const fg = makeCanvas(1, 1);                 // 手前レイヤー: 空を抜いた元映像
+
+const kaiju = new Image();
+kaiju.src = 'kaiju.png';
+
+function makeCanvas(w, h) {
+  const el = document.createElement('canvas');
+  el.width = w; el.height = h;
+  return { el, ctx: el.getContext('2d', { willReadFrequently: true }) };
+}
+
+/** いま描画元になっている要素と、その実寸 */
+let active = video;
+const sizeOf = (el) => el === video
+  ? [el.videoWidth, el.videoHeight]
+  : [el.naturalWidth, el.naturalHeight];
+
+function render() {
+  const [vw, vh] = sizeOf(active);
+  if (!vw) return;
+
+  if (out.width !== vw || out.height !== vh) {
+    out.width = vw; out.height = vh;
+    fg.el.width = vw; fg.el.height = vh;
+  }
+
+  // --- 1. 縮小して読み出す（getImageData はここ1回だけ） ---
+  proc.ctx.drawImage(active, 0, 0, PROC_W, PROC_H);
+  const frame = proc.ctx.getImageData(0, 0, PROC_W, PROC_H);
+
+  const t0 = performance.now();
+  const mask = segmentSky({ data: frame.data, width: PROC_W, height: PROC_H });
+  report(performance.now() - t0);
+
+  // --- 2. マスクをアルファに載せる（空=不透明） ---
+  for (let i = 0; i < mask.length; i++) maskImg.data[i * 4 + 3] = mask[i] ? 255 : 0;
+  maskCv.ctx.putImageData(maskImg, 0, 0);
+
+  // --- 3. 手前レイヤー: 元映像から空を抜く ---
+  fg.ctx.globalCompositeOperation = 'source-over';
+  fg.ctx.clearRect(0, 0, vw, vh);
+  fg.ctx.drawImage(active, 0, 0, vw, vh);
+  fg.ctx.globalCompositeOperation = 'destination-out';
+  fg.ctx.drawImage(maskCv.el, 0, 0, vw, vh);   // GPU が拡大（境界が滑らかになる）
+
+  // --- 4. 奥から順に重ねる ---
+  // 手前レイヤー（空を抜いた元映像 = 建物）は両モード共通。奥だけが違う。
+  if (mode.value === 'fill') {
+    outCtx.fillStyle = fillColor.value;
+    outCtx.fillRect(0, 0, vw, vh);             // 奥:   単色プレーン
+  } else {
+    outCtx.drawImage(active, 0, 0, vw, vh);    // 奥:   元映像（空はここが見える）
+    drawKaiju(vw, vh);                         // 中:   怪獣（加工なし）
+  }
+  outCtx.drawImage(fg.el, 0, 0);               // 手前: 空を抜いた元映像 = 建物
+}
+
+// 大きさも位置も「高さ」基準で決める。幅基準にすると横長のソースで
+// 幅由来の大きさが画面の高さを超え、上にはみ出す（cloudy01 で発生）。
+const KAIJU_HEIGHT = 0.40;   // 画面の高さに対する怪獣の高さ
+const KAIJU_FEET   = 0.58;   // 足元を置く高さ（0=上端, 1=下端）
+
+function drawKaiju(vw, vh) {
+  if (!kaiju.complete) return;
+  const h = vh * KAIJU_HEIGHT;
+  const w = h * kaiju.width / kaiju.height;
+  outCtx.drawImage(kaiju, (vw - w) / 2, vh * KAIJU_FEET - h, w, h);
+}
+
+const stats = document.getElementById('stats');
+let acc = 0, n = 0;
+function report(ms) {
+  acc += ms; n++;
+  if (n < 15) return;
+  const avg = acc / n;
+  stats.textContent = `${avg.toFixed(2)} ms/frame  ${(1000 / avg).toFixed(0)} fps相当  (${PROC_W}×${PROC_H})`;
+  acc = 0; n = 0;
+}
+
+// --- ループ ---
+// 動画は requestVideoFrameCallback で同じフレームを二度処理しないようにする
+// （rAF だと 60Hz で 30fps の映像を舐めて計測値が実態とずれる）。
+// 静止画は rAF。処理は冗長だが、ms/frame を出し続けるのが目的なのでそれでよい。
+let loopId = 0;
+function startLoop() {
+  const id = ++loopId;
+  const step = () => {
+    if (id !== loopId) return;                 // ソース切替で古いループを止める
+    render();
+    if (active === video && video.requestVideoFrameCallback) video.requestVideoFrameCallback(step);
+    else requestAnimationFrame(step);
+  };
+  step();
+}
+
+// --- ソース切替 ---
+const select = document.getElementById('source');
+SOURCES.forEach((s, i) => select.add(new Option(s.label, String(i))));
+
+async function selectSource(i) {
+  const s = SOURCES[i];
+
+  video.srcObject?.getTracks().forEach((t) => t.stop());
+  video.srcObject = null;
+  video.removeAttribute('src');
+  video.load();
+
+  if (s.kind === 'still') {
+    active = still;
+    video.hidden = true; still.hidden = false;
+    still.src = s.src;
+    await still.decode().catch(() => {});
+  } else {
+    active = video;
+    still.hidden = true; video.hidden = false;
+    if (s.kind === 'camera') {
+      video.srcObject = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false,
+      });
+    } else {
+      video.src = s.src;
+    }
+    await video.play().catch(() => {});
+  }
+
+  stats.textContent = '—'; acc = 0; n = 0;
+  startLoop();
+}
+
+select.onchange = () => selectSource(Number(select.value));
+selectSource(0);
+</script>
