@@ -77,3 +77,8 @@ python3 -m http.server 8766
 - 傾いた稜線は約4画素の階段になる（処理解像度の量子化）
 - 定数は「薄暮」「曇天」の2条件で較正済み。快晴の青空・夜空・夕焼けは未検証
 - 時間方向の平滑化は未実装のため、動画ではフレーム間のちらつきが残る
+
+## 素材
+
+- **`kaiju.png`**: [openclipart #346163 "Monster D" by mickleness](https://openclipart.org/detail/346163/monster-d)
+  — **Public Domain (CC0)**。透明な余白を落として 550×600 に縮小しています
