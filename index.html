@@ -86,12 +86,15 @@ function render() {
   }
 
   // --- 1. 縮小して読み出す（getImageData はここ1回だけ） ---
+  // 計測はこのフレームの全工程を覆う。getImageData は GPU の描画完了を待つ
+  // 同期読み戻しで、モバイルでは分離処理本体より高くつくことがあるため。
+  const tFrame = performance.now();
   proc.ctx.drawImage(active, 0, 0, PROC_W, PROC_H);
   const frame = proc.ctx.getImageData(0, 0, PROC_W, PROC_H);
 
-  const t0 = performance.now();
+  const tSeg = performance.now();
   const mask = segmentSky({ data: frame.data, width: PROC_W, height: PROC_H });
-  report(performance.now() - t0);
+  const segMs = performance.now() - tSeg;
 
   // --- 2. マスクをアルファに載せる（空=不透明） ---
   for (let i = 0; i < mask.length; i++) maskImg.data[i * 4 + 3] = mask[i] ? 255 : 0;
@@ -114,6 +117,10 @@ function render() {
     drawKaiju(vw, vh);                         // 中:   怪獣（加工なし）
   }
   outCtx.drawImage(fg.el, 0, 0);               // 手前: 空を抜いた元映像 = 建物
+
+  // drawImage は GPU に積むだけで完了を待たないので、合成の実コストは
+  // ここに全部は現れない。それでも読み戻しと合成の発行は区間に入る。
+  report(segMs, performance.now() - tFrame);
 }
 
 // 大きさも位置も「高さ」基準で決める。幅基準にすると横長のソースで
@@ -129,13 +136,14 @@ function drawKaiju(vw, vh) {
 }
 
 const stats = document.getElementById('stats');
-let acc = 0, n = 0;
-function report(ms) {
-  acc += ms; n++;
+let accSeg = 0, accAll = 0, n = 0;
+function report(segMs, allMs) {
+  accSeg += segMs; accAll += allMs; n++;
   if (n < 15) return;
-  const avg = acc / n;
-  stats.textContent = `${avg.toFixed(2)} ms/frame  ${(1000 / avg).toFixed(0)} fps相当  (${PROC_W}×${PROC_H})`;
-  acc = 0; n = 0;
+  const seg = accSeg / n, all = accAll / n;
+  stats.textContent = `${all.toFixed(2)} ms/frame  ${(1000 / all).toFixed(0)} fps相当`
+                    + `  (分離 ${seg.toFixed(2)} / 読出・合成 ${(all - seg).toFixed(2)})`;
+  accSeg = accAll = n = 0;
 }
 
 // --- ループ ---
