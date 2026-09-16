@@ -10,6 +10,12 @@
   .pane { flex: 1 1 0; min-width: 0; }
   /* 見たいのは分離結果のほう。元映像は何を写しているかが分かれば足りるので細くする。 */
   .panes > .pane:first-child { flex: 0 0 22%; }
+  /* 分離結果のみ。元映像は display:none にせず画面外へ逃がす。video を display:none に
+     すると環境によってフレームの提示が止まり、requestVideoFrameCallback のループが
+     進まなくなるため（動画ソースで ms/frame が出なくなる）。 */
+  body.solo .panes > .pane:first-child {
+    position: absolute; left: -10000px; top: 0; width: 240px;
+  }
   .pane h2 { margin: 0 0 4px; font-size: 12px; font-weight: 400; color: #888; }
   video, img, canvas { width: 100%; display: block; background: #000; }
   /* 作者スタイルの display:block が UA の [hidden]{display:none} を打ち消すので明示する */
@@ -25,6 +31,7 @@
     <option value="fill">空塗りつぶし</option>
   </select>
   <input type="color" id="fillColor" value="#ff00ff">
+  <label><input type="checkbox" id="solo"> 分離のみ</label>
   <span id="stats">—</span>
 </header>
 
@@ -218,5 +225,12 @@ async function selectSource(i) {
 }
 
 select.onchange = () => selectSource(Number(select.value));
+
+// 元映像を引っ込めて分離結果だけを大きく出す。処理解像度は表示と独立なので
+// 速度にも品質にも影響しない。
+const solo = document.getElementById('solo');
+solo.onchange = () => document.body.classList.toggle('solo', solo.checked);
+solo.onchange();                              // 再読み込みで checked が復元される環境に備える
+
 selectSource(0);
 </script>
