@@ -46,8 +46,11 @@ const SOURCES = [
   { label: 'カメラ',            kind: 'camera' },
 ];
 
-// 処理解像度。TS が触るのはこの1枚だけで、縮小も拡大も GPU に任せる。
-const PROC_W = 180, PROC_H = 320;
+// 処理に使う画素数の予算。TS が触るのはこの1枚だけで、縮小も拡大も GPU に任せる。
+// 解像度は入力の縦横比に合わせて決め、画素数だけをここに固定する。
+// 固定サイズにすると横長のソースが潰れ、ビル間の細い隙間が判定解像度で消える
+// （実測 cloudy01: IoU 0.950 → 0.989、再現率 0.958 → 0.998、しかも速くなる）。
+const PROC_PIXELS = 180 * 320;
 
 const video = document.getElementById('video');
 const still = document.getElementById('still');
@@ -56,9 +59,18 @@ const fillColor = document.getElementById('fillColor');
 const out = document.getElementById('out');
 const outCtx = out.getContext('2d');
 
-const proc = makeCanvas(PROC_W, PROC_H);     // video を縮小して読み出すための作業用
-const maskCv = makeCanvas(PROC_W, PROC_H);   // マスクをアルファとして持つ
-const maskImg = maskCv.ctx.createImageData(PROC_W, PROC_H);
+const proc = makeCanvas(1, 1);               // video を縮小して読み出すための作業用
+const maskCv = makeCanvas(1, 1);             // マスクをアルファとして持つ
+let maskImg = null;                          // 解像度が変わるたびに作り直す
+
+/** 入力の縦横比に合わせた処理解像度。画素数は PROC_PIXELS に保つ。 */
+function procSize(vw, vh) {
+  const ratio = vw / vh;
+  return [
+    Math.max(2, Math.round(Math.sqrt(PROC_PIXELS * ratio))),
+    Math.max(2, Math.round(Math.sqrt(PROC_PIXELS / ratio))),
+  ];
+}
 const fg = makeCanvas(1, 1);                 // 手前レイヤー: 空を抜いた元映像
 
 const kaiju = new Image();
@@ -88,12 +100,19 @@ function render() {
   // --- 1. 縮小して読み出す（getImageData はここ1回だけ） ---
   // 計測はこのフレームの全工程を覆う。getImageData は GPU の描画完了を待つ
   // 同期読み戻しで、モバイルでは分離処理本体より高くつくことがあるため。
+  const [pw, ph] = procSize(vw, vh);
+  if (proc.el.width !== pw || proc.el.height !== ph) {
+    proc.el.width = pw; proc.el.height = ph;
+    maskCv.el.width = pw; maskCv.el.height = ph;
+    maskImg = maskCv.ctx.createImageData(pw, ph);
+  }
+
   const tFrame = performance.now();
-  proc.ctx.drawImage(active, 0, 0, PROC_W, PROC_H);
-  const frame = proc.ctx.getImageData(0, 0, PROC_W, PROC_H);
+  proc.ctx.drawImage(active, 0, 0, pw, ph);
+  const frame = proc.ctx.getImageData(0, 0, pw, ph);
 
   const tSeg = performance.now();
-  const mask = segmentSky({ data: frame.data, width: PROC_W, height: PROC_H });
+  const mask = segmentSky({ data: frame.data, width: pw, height: ph });
   const segMs = performance.now() - tSeg;
 
   // --- 2. マスクをアルファに載せる（空=不透明） ---
@@ -120,7 +139,7 @@ function render() {
 
   // drawImage は GPU に積むだけで完了を待たないので、合成の実コストは
   // ここに全部は現れない。それでも読み戻しと合成の発行は区間に入る。
-  report(segMs, performance.now() - tFrame);
+  report(segMs, performance.now() - tFrame, pw, ph);
 }
 
 // 大きさも位置も「高さ」基準で決める。幅基準にすると横長のソースで
@@ -137,12 +156,12 @@ function drawKaiju(vw, vh) {
 
 const stats = document.getElementById('stats');
 let accSeg = 0, accAll = 0, n = 0;
-function report(segMs, allMs) {
+function report(segMs, allMs, pw, ph) {
   accSeg += segMs; accAll += allMs; n++;
   if (n < 15) return;
   const seg = accSeg / n, all = accAll / n;
   stats.textContent = `${all.toFixed(2)} ms/frame  ${(1000 / all).toFixed(0)} fps相当`
-                    + `  (分離 ${seg.toFixed(2)} / 読出・合成 ${(all - seg).toFixed(2)})`;
+                    + `  (分離 ${seg.toFixed(2)} / 読出・合成 ${(all - seg).toFixed(2)})  ${pw}×${ph}`;
   accSeg = accAll = n = 0;
 }
 
