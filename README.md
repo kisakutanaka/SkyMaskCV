@@ -12,7 +12,7 @@ CNN を使わず、古典的なコンピュータビジョンの手法だけで�
 
 ## 速度
 
-M 系デスクトップで **4.8 ms/frame**（分離処理のみ。フレーム全体では約 11ms）。
+M 系デスクトップで **2.9 ms/frame**（分離処理のみ。フレーム全体では約 9ms）。
 処理は約 57,600 画素（縦長なら 180×320）で行い、縮小・拡大は `drawImage` 経由で
 GPU に任せています。**解像度は入力の縦横比に合わせて決め、画素数だけを固定します。**
 固定サイズにすると横長のソースが潰れ、ビル間の細い隙間が判定解像度で消えます
@@ -102,8 +102,8 @@ train 600 枚で決めて val 335 枚で検証し、さらに `img/` の元素�
 
 | | mIoU | 適合率 | 再現率 |
 |---|---|---|---|
-| val 335枚 | 0.795 | 0.915 | 0.852 |
-| train 3901枚 | 0.789 | 0.947 | 0.825 |
+| val 335枚 | 0.792 | 0.923 | 0.843 |
+| train 3901枚 | 0.780 | 0.949 | 0.813 |
 
 ## 構成
 
@@ -133,7 +133,7 @@ python3 -m http.server 8766
 ラベル PNG は R チャンネルが空マスクです。
 
 ```sh
-python3 tools/prep.py val  tools/out/val      # JPEG を raw RGBA に展開
+python3 tools/prep.py val  tools/out/val      # JPEG を raw RGBA に展開（デモと同じ解像度）
 python3 tools/gt.py   val  tools/out/val      # ラベルを raw の 0/1 に展開
 node    tools/eval.mjs     tools/out/val      # dist/skyMask.js を走らせて採点
 ```
