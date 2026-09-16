@@ -261,7 +261,7 @@ export interface SkySeed {
 export function estimateSkySeed(
   blue: Float32Array, gray: Float32Array, tex: Float32Array,
   width: number, height: number,
-  opts: { seedRowRatio: number; texMax: number; minSeedCount: number },
+  opts: { seedRowRatio: number; texMaxRel: number; minSeedCount: number },
 ): SkySeed | null {
   const rows = Math.max(1, Math.round(height * opts.seedRowRatio));
   const limit = rows * width;
@@ -272,7 +272,7 @@ export function estimateSkySeed(
   const blues: number[] = [];
   const grays: number[] = [];
   for (let i = 0; i < limit; i++) {
-    if (tex[i] < opts.texMax) {
+    if (tex[i] / (gray[i] + 1) < opts.texMaxRel) {
       blues.push(blue[i]);
       grays.push(gray[i]);
     }
@@ -297,7 +297,7 @@ function median(values: number[]): number {
  *
  *   |青優勢度 - seed.blue| < bdTol  かつ
  *   |輝度     - seed.gray| < vTol   かつ
- *   （tex があれば）tex < texMax
+ *   （tex があれば）tex / 輝度 < texMaxRel
  *
  * 各軸を独立に見る（ユークリッド距離を取らない）のは、2軸のスケールに
  * 共通の物差しがないため。青優勢度は無次元の比、輝度は 0〜255 の絶対値で、
@@ -312,14 +312,14 @@ function median(values: number[]): number {
 export function classifyBySeed(
   blue: Float32Array, gray: Float32Array, tex: Float32Array | null,
   seed: SkySeed,
-  opts: { bdTol: number; vTol: number; texMax: number },
+  opts: { bdTol: number; vTol: number; texMaxRel: number },
 ): Uint8Array {
   const out = new Uint8Array(blue.length);
 
   for (let i = 0; i < out.length; i++) {
     const nearColour = Math.abs(blue[i] - seed.blue) < opts.bdTol;
     const nearValue = Math.abs(gray[i] - seed.gray) < opts.vTol;
-    const smooth = tex === null || tex[i] < opts.texMax;
+    const smooth = tex === null || tex[i] / (gray[i] + 1) < opts.texMaxRel;
     out[i] = nearColour && nearValue && smooth ? 1 : 0;
   }
 
@@ -443,7 +443,7 @@ export function refineBoundary(
   fine: Image,
   coarse: Uint8Array, coarseW: number, coarseH: number,
   seed: SkySeed,
-  opts: { bandRadius: number; bdTol: number; vTol: number; texMax: number },
+  opts: { bandRadius: number; bdTol: number; vTol: number; texMaxRel: number },
 ): Uint8Array {
   // 帯は粗解像度で作ってから引き伸ばす。高解像度で膨張・収縮するより安い。
   const grown = morphSquare(coarse, coarseW, coarseH, opts.bandRadius, 'dilate');
@@ -469,8 +469,16 @@ export function refineBoundary(
 export interface SkyMaskOptions {
   /** 局所σのカーネル半径（粗解像度） */
   texRadius: number;
-  /** これ以上ざらついた画素は空としない */
-  texMax: number;
+  /**
+   * これ以上ざらついた画素は空としない。局所σを輝度で割った相対値。
+   *
+   * 絶対値で切ると明るい空ほど不利になる。テクスチャの振幅は明るさに比例
+   * するため。青優勢度を (B-R)/(B+R) にしたのと同じ理由で、ここも比を取る。
+   * 実測（Open Images 4236枚）: 絶対σで適合率を 0.908 に揃えたとき再現率
+   * 0.795、相対σなら 0.821。判定とシード抽出の両方を相対にすると
+   * val で mIoU 0.740→0.753 / 適合率 0.926→0.932 / 再現率 0.776→0.795。
+   */
+  texMaxRel: number;
   /** シードを取る上端の割合 */
   seedRowRatio: number;
   /** シードがこれ未満なら空なしと判断する */
@@ -503,7 +511,7 @@ export interface SkyMaskOptions {
 
 export const DEFAULT_OPTIONS: SkyMaskOptions = {
   texRadius: 2,
-  texMax: 6.0,
+  texMaxRel: 0.045,
   seedRowRatio: 0.10,
   minSeedCount: 50,
   bdTol: 0.25,
