@@ -115,6 +115,9 @@ train 600 枚で決めて val 335 枚で検証し、さらに回帰セット27�
 読んでください。**いまの指標は [LOG.md](LOG.md) の冒頭「現在地」**にあり、
 変更ごとの前後の数字と却下した案が、その下に新しい順で並んでいます。
 
+CNN 実装（[SkyMaskCNN](https://github.com/kisakutanaka/SkyMaskCNN)）との比較は
+[BENCHMARK.md](BENCHMARK.md) にあります。精度・速度・配信コストを同じ条件で測ったものです。
+
 ## 構成
 
 ```

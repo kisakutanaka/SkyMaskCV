@@ -1,0 +1,143 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>SkyMaskCV vs SkyMaskCNN</title>
+<!--
+  古典CV（SkyMaskCV）と CNN（SkyMaskCNN）を、同じ機械・同じ画像・同じ指標で比べる台。
+  ブラウザでしか動かない（sky-segmenter.js が canvas に依存するため）。
+
+  入力はそれぞれが実際に出荷している経路に揃える。CV は画素数一定に縮小した .bin、
+  CNN は元の JPEG から 512×512 で取り込み。どちらかの前処理をもう片方に
+  押し付けると、設計判断ごと押し付けることになる。
+
+  採点は CV の処理解像度のグリッドで行う（既存の指標と地続きにするため）。
+  CNN のマスクはそこへ最近傍で落とす。
+
+  使い方: tools/bench_server.py で WebAppUtils を配信し
+          /SkyMaskCV/tools/bench.html?split=scenes を開く
+-->
+<body style="background:#111;color:#ddd;font:13px/1.6 system-ui">
+<pre id="log">起動中…</pre>
+<script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.29.0/dist/ort.min.js"></script>
+<script type="module">
+import { segmentSky } from '/SkyMaskCV/dist/skyMask.js';
+import { createSkySegmenter } from '/SkyMaskCNN/sky-segmenter.js';
+
+const log = document.getElementById('log');
+const say = (s) => { log.textContent += '\n' + s; };
+const q = new URLSearchParams(location.search);
+const split = q.get('split') ?? 'scenes';
+const limit = Number(q.get('limit') ?? 0);
+const BASE = '/SkyMaskCV';
+
+const load = async (u, kind) => {
+  const r = await fetch(u);
+  if (!r.ok) throw new Error(`${r.status} ${u}`);
+  return kind === 'json' ? r.json() : new Uint8Array(await r.arrayBuffer());
+};
+
+/** 元の JPEG を 512×512 の作業キャンバスに置いて CNN へ渡すためのソース */
+const imgOf = (u) => new Promise((ok, ng) => {
+  const im = new Image();
+  im.onload = () => ok(im); im.onerror = ng; im.src = u;
+});
+
+function score(mask, gt) {
+  let inter = 0, uni = 0, pred = 0, pos = 0;
+  for (let i = 0; i < gt.length; i++) {
+    const a = mask[i] > 0, b = gt[i] > 0;
+    if (a && b) inter++;
+    if (a || b) uni++;
+    if (a) pred++;
+    if (b) pos++;
+  }
+  return { iou: uni ? inter / uni : 1, prec: pred ? inter / pred : 1, rec: pos ? inter / pos : 1 };
+}
+
+/** CNN の確率マップ（正方形）を (w,h) のグリッドへ最近傍で落として2値化する */
+function toGrid(prob, size, w, h, thr) {
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const sy = Math.min(size - 1, (y * size / h) | 0);
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(size - 1, (x * size / w) | 0);
+      out[y * w + x] = prob[sy * size + sx] >= thr ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+(async () => {
+  log.textContent = `split=${split} 準備中…`;
+  const man0 = await load(`${BASE}/tools/out/${split}/manifest.json`, 'json');
+  const man = limit ? man0.slice(0, limit) : man0;
+
+  const seg = await createSkySegmenter({ modelUrl: '/SkyMaskCNN/models/tinyskynet_skyseg_256.onnx' });
+  say(`モデル読み込み完了。${man.length} 枚`);
+
+  const THRS = [0.3, 0.4, 0.5, 0.6, 0.7];
+  const acc = { cv: [0, 0, 0], cnnByThr: THRS.map(() => [0, 0, 0]) };
+  const ms = { cv: [], cvFull: [], cnn: [] };
+  const cap = document.createElement('canvas');
+  const capCtx = cap.getContext('2d', { willReadFrequently: true });
+  const per = [];
+
+  for (let k = 0; k < man.length; k++) {
+    const { id, w, h } = man[k];
+    const [bin, gt, img] = await Promise.all([
+      load(`${BASE}/tools/out/${split}/${id}.bin`),
+      load(`${BASE}/tools/out/${split}/${id}.gt`),
+      imgOf(`${BASE}/dataset/images/${split}/${id}.jpg`),
+    ]);
+
+    // --- 古典CV ---
+    // 速度は2つ測る。core は分離処理だけ、full は取り込み（drawImage + getImageData）込み。
+    // CNN の segment() は取り込みを含むので、並べるなら full のほうが対等。
+    const rgba = new Uint8ClampedArray(bin.buffer, bin.byteOffset, bin.length);
+    let t = performance.now();
+    const cvMask = segmentSky({ data: rgba, width: w, height: h });
+    ms.cv.push(performance.now() - t);
+
+    if (cap.width !== w || cap.height !== h) { cap.width = w; cap.height = h; }
+    t = performance.now();
+    capCtx.drawImage(img, 0, 0, w, h);
+    const frame = capCtx.getImageData(0, 0, w, h);
+    segmentSky({ data: frame.data, width: w, height: h });
+    ms.cvFull.push(performance.now() - t);
+    const s = score(cvMask, gt);
+    acc.cv[0] += s.iou; acc.cv[1] += s.prec; acc.cv[2] += s.rec;
+
+    // --- CNN ---
+    t = performance.now();
+    const prob = await seg.segment(img);
+    ms.cnn.push(performance.now() - t);
+    const cnnScores = THRS.map((thr, ti) => {
+      const m = toGrid(prob.data, prob.width, w, h, thr);
+      const q2 = score(m, gt);
+      acc.cnnByThr[ti][0] += q2.iou; acc.cnnByThr[ti][1] += q2.prec; acc.cnnByThr[ti][2] += q2.rec;
+      return q2;
+    });
+    per.push({ id, cv: s, cnn: cnnScores[2] });          // 0.5 を代表値にする
+    if (k % 25 === 0) log.textContent = `${k + 1}/${man.length}`;
+  }
+
+  const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+  const med = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+  const n = man.length;
+  const result = {
+    split, n,
+    cv: { mIoU: acc.cv[0] / n, prec: acc.cv[1] / n, rec: acc.cv[2] / n,
+          msMean: mean(ms.cv), msMed: med(ms.cv),
+          fullMean: mean(ms.cvFull), fullMed: med(ms.cvFull) },
+    cnn: THRS.map((thr, i) => ({ thr, mIoU: acc.cnnByThr[i][0] / n,
+          prec: acc.cnnByThr[i][1] / n, rec: acc.cnnByThr[i][2] / n })),
+    cnnMs: { mean: mean(ms.cnn), med: med(ms.cnn) },
+    per,
+    ua: navigator.userAgent,
+  };
+  await fetch('/result', { method: 'POST', body: JSON.stringify(result) });
+  log.textContent = 'DONE ' + split;
+})().catch((e) => {
+  log.textContent = 'ERROR ' + e.message + '\n' + e.stack;
+  fetch('/result', { method: 'POST', body: JSON.stringify({ error: e.message, stack: e.stack }) });
+});
+</script>
