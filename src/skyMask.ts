@@ -553,8 +553,18 @@ export interface SkyMaskOptions {
   texMaxRel: number;
   /** シードを取る上端の割合 */
   seedRowRatio: number;
-  /** シードがこれ未満なら空なしと判断する */
-  minSeedCount: number;
+  /**
+   * 第1モードのシードがこれ未満なら「空が写っていない」と判断して全0を返す。
+   * 粗画像の面積に対する比で持つ（`modeMinRatio` と同じ理由。絶対数だと
+   * 処理解像度を変えたときに黙って挙動が変わる）。
+   *
+   * 本来はカメラを下に向けた場合のための安全弁で、val 335枚では
+   * しきい値を 1 から 100 まで振っても出力が1画素も変わらない（発火しない）。
+   * 一方 train 3901枚では5枚で発火しており、いずれも空が小さく候補が43〜49個の
+   * 構図だった。比にして43に下がることでこの5枚が全0マスクから救われる
+   * （IoU 0.000 → 0.008〜0.040、適合率はいずれも 1.000）。
+   */
+  minSeedRatio: number;
   /** 青優勢度がシードからこれ以上離れたら空でない */
   bdTol: number;
   /** 輝度がシードからこれ以上離れたら空でない */
@@ -614,7 +624,7 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   texRadius: 2,
   texMaxRel: 0.045,
   seedRowRatio: 0.10,
-  minSeedCount: 50,
+  minSeedRatio: 0.003,    // 較正時の 50/16640。粗面積 14400 なら43画素
   bdTol: 0.25,
   vTol: 42.0,
   openRadius: 1,
@@ -652,7 +662,8 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
   // 1回目のモードは画面上端のバンドから取る
   const band = new Uint8Array(w * h);
   band.fill(1, 0, Math.max(1, Math.round(h * opts.seedRowRatio)) * w);
-  const seed = skySeedIn(blue, gray, tex, band, [], opts.minSeedCount, opts);
+  const minSeed = Math.max(1, Math.round(w * h * opts.minSeedRatio));
+  const seed = skySeedIn(blue, gray, tex, band, [], minSeed, opts);
   if (seed === null) return new Uint8Array(fine.width * fine.height);
 
   // シードは1つとは限らない。青空と白い雲のように空が複数の見えを持つ構図では、
