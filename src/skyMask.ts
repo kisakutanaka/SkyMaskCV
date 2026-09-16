@@ -589,14 +589,19 @@ export interface SkyMaskOptions {
   /** 次のモードを探す範囲。マスクの縁から粗解像度で何画素まで見るか */
   modeReach: number;
   /**
-   * 次のモードを認めるのに必要な候補画素数。
+   * 次のモードを認めるのに必要な候補画素数。粗画像の面積に対する比で持つ。
    *
    * `minSeedCount` と分けてあるのは、雲の縁は遷移部で局所σが上がって滑らかさの
    * 条件を落ちるため、候補が数十画素しか残らないことがあるから。実測の
-   * 1b8d1d161bf4396b では候補が22画素で、50 だと第2モードが作られず
-   * 雲が取れないままだった（IoU 0.599 → 20 にすると 0.871）。
+   * 1b8d1d161bf4396b では候補が22画素で、絶対数 50 だと第2モードが作られず
+   * 雲が取れないままだった。
+   *
+   * 絶対数で持っていたときに実際に壊れた。較正時の粗面積 16640 画素で決めた
+   * 20 をそのまま使っていたところ、処理解像度を入力の縦横比に合わせた結果
+   * 粗面積が 14400 になり、候補が16〜19個で 20 に届かず第2モードが消えた
+   * （同じ画像で IoU 0.864 → 0.559）。候補数は面積に比例するので比で持つ。
    */
-  modeMinCount: number;
+  modeMinRatio: number;
   /** モードを継ぎ足す最大回数。実測では3回で収束した */
   modeRounds: number;
   /** この勾配を超えた画素を輪郭の候補にする */
@@ -617,7 +622,7 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   bandRadius: 4,
   keepTol: 2.0,
   modeReach: 4,
-  modeMinCount: 20,
+  modeMinRatio: 0.0012,   // 較正時の 20/16640。粗面積 14400 なら17画素
   modeRounds: 3,
   edgeMin: 20.0,
   edgeLen: 6,
@@ -685,7 +690,8 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
     const rim = morphSquare(mask, w, h, opts.modeReach, 'dilate');
     for (let i = 0; i < rim.length; i++) if (mask[i]) rim[i] = 0;
 
-    const extra = skySeedIn(blue, gray, tex, rim, seeds, opts.modeMinCount, opts);
+    const minCount = Math.max(1, Math.round(w * h * opts.modeMinRatio));
+    const extra = skySeedIn(blue, gray, tex, rim, seeds, minCount, opts);
     if (extra === null) break;
     seeds.push(extra);
     mask = build();
