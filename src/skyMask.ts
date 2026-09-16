@@ -242,54 +242,64 @@ export interface SkySeed {
   gray: number;
 }
 
-/**
- * 画面上端の画素から「この空はどう見えているか」を推定する。
- *
- * 固定しきい値をやめてこれを基準にするのが、薄暮と曇天を1本の規則で扱える理由。
- * 薄暮は色で分離でき輝度では分離できず、曇天はその逆になる（実測）。
- * どちらの軸が効くかを決め打ちせず、空自身の値を基準点として両方を持つ。
- *
- * 上端 `seedRowRatio` の範囲のうち、テクスチャが滑らかな画素だけを集める。
- * 滑らかさで絞るのは、上端に建物が写り込むフレーム（実測 f004）で
- * 窓のエッジを除くため。
- *
- * 代表値は平均でなく中央値。街灯の光芒が上端行に混入するフレーム
- * （実測 f006 / f007）では平均だと基準が引きずられて破綻する。
- *
- * 十分な画素が集まらなければ `null` を返す（＝空が写っていないと判断する）。
- */
-export function estimateSkySeed(
-  blue: Float32Array, gray: Float32Array, tex: Float32Array,
-  width: number, height: number,
-  opts: { seedRowRatio: number; texMaxRel: number; minSeedCount: number },
-): SkySeed | null {
-  const rows = Math.max(1, Math.round(height * opts.seedRowRatio));
-  const limit = rows * width;
-
-  // PERF: 上端10% = 最大1,440画素を number[] に push している。実測 2.92ms には
-  //       含まれた上での数字なので現状は許容。実機計測で GC やここが効いてきたら、
-  //       事前確保した Float32Array + 件数カウンタ + subarray(0, n).sort() に差し替える。
-  const blues: number[] = [];
-  const grays: number[] = [];
-  for (let i = 0; i < limit; i++) {
-    if (tex[i] / (gray[i] + 1) < opts.texMaxRel) {
-      blues.push(blue[i]);
-      grays.push(gray[i]);
-    }
-  }
-
-  if (blues.length < opts.minSeedCount) return null;
-
-  return { blue: median(blues), gray: median(grays) };
-}
-
-/** 中央値。引数の配列を破壊的に並べ替える。 */
+/** 中央値。偶数個のときは中央2つの平均を返す。 */
 function median(values: number[]): number {
   values.sort((a, b) => a - b);
   const mid = values.length >> 1;
   return values.length & 1
     ? values[mid]
     : (values[mid - 1] + values[mid]) / 2;
+}
+
+/**
+ * 与えられた探索範囲から、空のモードを1つ拾う。足りなければ `null`。
+ *
+ * 固定しきい値をやめてこれを基準にするのが、薄暮と曇天を1本の規則で扱える理由。
+ * 薄暮は色で分離でき輝度では分離できず、曇天はその逆になる（実測）。
+ * どちらの軸が効くかを決め打ちせず、空自身の値を基準点として両方を持つ。
+ *
+ * 探索範囲のうち、テクスチャが滑らかで、`seeds` のどの箱にも入らない画素を集める。
+ * 滑らかさで絞るのは、上端に建物が写り込むフレーム（実測 f004）で窓のエッジを
+ * 除くため。既知の箱を除くのは、2回目以降に同じモードを拾い直さないため。
+ *
+ * 代表値は平均でなく中央値。街灯の光芒が上端行に混入するフレーム
+ * （実測 f006 / f007）では平均だと基準が引きずられて破綻する。
+ *
+ * 呼び出し方は2通りある。探索範囲が違うだけで規則は同じ。
+ *   1回目 … 探索範囲＝画面上端のバンド、`seeds` は空
+ *   2回目以降 … 探索範囲＝いま空と判った領域の縁、`seeds` に既知のモード
+ *
+ * 2回目以降が要るのは、空が1組の代表値では表せないことがあるから。青空に白い雲が
+ * 浮かぶ構図では、青空（実測 輝度113 / 青優勢度0.37）と雲（輝度189 / 0.07）が
+ * 離れすぎていて同時には囲えない。雲の局所σは 0.033 と滑らかなので、落として
+ * いたのは箱そのものだった。縁に接していることを求めるのは、空と地続きでない
+ * 明るい面（白い壁など）を拾わないため。
+ */
+export function skySeedIn(
+  blue: Float32Array, gray: Float32Array, tex: Float32Array,
+  search: Uint8Array,
+  seeds: readonly SkySeed[],
+  minCount: number,
+  opts: { texMaxRel: number; bdTol: number; vTol: number },
+): SkySeed | null {
+  // PERF: 上端10% = 最大1,440画素を number[] に push している。実測 2.92ms には
+  //       含まれた上での数字なので現状は許容。実機計測で GC やここが効いてきたら、
+  //       事前確保した Float32Array + 件数カウンタ + subarray(0, n).sort() に差し替える。
+  const blues: number[] = [];
+  const grays: number[] = [];
+
+  for (let i = 0; i < search.length; i++) {
+    if (!search[i]) continue;
+    if (tex[i] / (gray[i] + 1) >= opts.texMaxRel) continue;
+    const known = seeds.some((s) => Math.abs(blue[i] - s.blue) < opts.bdTol
+                                 && Math.abs(gray[i] - s.gray) < opts.vTol);
+    if (known) continue;
+    blues.push(blue[i]);
+    grays.push(gray[i]);
+  }
+
+  if (blues.length < minCount) return null;
+  return { blue: median(blues), gray: median(grays) };
 }
 
 /**
@@ -327,66 +337,25 @@ export function classifyBySeed(
 }
 
 /**
- * 空のモードをもう1つ見つける。見つからなければ `null`。
- *
- * 空は必ずしも1つの見えでは表せない。青空に白い雲が浮かぶ構図では、
- * 青空（実測 輝度113 / 青優勢度0.37）と雲（輝度189 / 0.07）が離れすぎていて、
- * 1組の許容値では同時に囲えない。実測（1b8d1d161bf4396b）では雲の局所σは
- * 0.033 と滑らかで、落としているのは箱そのものだった。
- *
- * そこで「いま空と判った領域の縁に接していて、滑らかで、どのシードの箱にも
- * 入らない」画素を集め、その中央値を次のシードにする。縁に接していることを
- * 求めるのは、空と地続きでない明るい面（白い壁など）を拾わないため。
- *
- * これを数回繰り返すと、値の空間を段階的に歩いて雲まで届く。実測では3回で
- * 収束した。歩ける距離に上限は設けていない。霞んだ街並みや青いガラスの
- * ビルのように空と構造物が実際に混ざっている構図では歩きすぎるが、
- * そこは元々分離できない領域として許容している。
- */
-export function nextSkySeed(
-  blue: Float32Array, gray: Float32Array, tex: Float32Array,
-  mask: Uint8Array, width: number, height: number,
-  seeds: readonly SkySeed[],
-  opts: { modeReach: number; modeMinCount: number; texMaxRel: number; bdTol: number; vTol: number },
-): SkySeed | null {
-  const near = morphSquare(mask, width, height, opts.modeReach, 'dilate');
-
-  const blues: number[] = [];
-  const grays: number[] = [];
-  for (let i = 0; i < mask.length; i++) {
-    if (!near[i] || mask[i]) continue;
-    if (tex[i] / (gray[i] + 1) >= opts.texMaxRel) continue;
-    const known = seeds.some((s) => Math.abs(blue[i] - s.blue) < opts.bdTol
-                                 && Math.abs(gray[i] - s.gray) < opts.vTol);
-    if (known) continue;
-    blues.push(blue[i]);
-    grays.push(gray[i]);
-  }
-  if (blues.length < opts.modeMinCount) return null;
-  return { blue: median(blues), gray: median(grays) };
-}
-
-/**
  * 画面上端に接する十分大きな連結成分だけを残す。
  *
  * 判定は画素ごとに独立なので、空と同じ色・輝度・滑らかさを持つ地上の領域
  * （舗装、水面、平らな壁）が飛び地として残る。空は必ず画面上端に接している
  * という前提を使ってそれらを落とす。
  *
- * 面積が `minAreaRatio` に満たない成分も捨てる。上端に接していても、
- * 数画素の塊は空ではなくノイズと見なす。
+ * かつては面積の下限も持っていたが、実測で回帰セットの出力が完全に同一だった
+ * ため外した。小さな塊はオープニングと多モードの整形が先に落としている。
  *
  * 4近傍の幅優先探索。`queue` に添字を積むので再帰せず、
  * スタックを溢れさせない（90×160 でも最悪 14,400 段になる）。
  */
 export function keepTopComponent(
-  mask: Uint8Array, width: number, height: number, minAreaRatio: number,
+  mask: Uint8Array, width: number, height: number,
 ): Uint8Array {
   const n = width * height;
   const out = new Uint8Array(n);
   const visited = new Uint8Array(n);
   const queue = new Int32Array(n);
-  const minArea = n * minAreaRatio;
 
   // 上端の空画素それぞれから探索する。成分を一度なめて面積を測り、
   // 合格したものだけ書き戻す。
@@ -408,10 +377,7 @@ export function keepTopComponent(
       if (p < n - width && mask[p + width] && !visited[p + width]) { visited[p + width] = 1; queue[tail++] = p + width; }
     }
 
-    // tail がこの成分の画素数
-    if (tail >= minArea) {
-      for (let i = 0; i < tail; i++) out[queue[i]] = 1;
-    }
+    for (let i = 0; i < tail; i++) out[queue[i]] = 1;
   }
 
   return out;
@@ -554,8 +520,6 @@ export interface SkyMaskOptions {
   openRadius: number;
   /** クロージングの半径（切れ込みの橋渡し） */
   closeRadius: number;
-  /** この割合に満たない連結成分は捨てる */
-  minAreaRatio: number;
   /**
    * 境界帯の半径（粗解像度）。`closeRadius` 以上にすること。
    * クロージングは境界を最大 closeRadius だけ動かすので、帯がそれより狭いと
@@ -596,7 +560,6 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   vTol: 42.0,
   openRadius: 1,
   closeRadius: 4,
-  minAreaRatio: 0.01,
   bandRadius: 4,
   keepTol: 2.0,
   modeReach: 4,
@@ -625,7 +588,10 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
   const gray = toGray(coarse);
   const tex = localStdDev(gray, w, h, opts.texRadius);
 
-  const seed = estimateSkySeed(blue, gray, tex, w, h, opts);
+  // 1回目のモードは画面上端のバンドから取る
+  const band = new Uint8Array(w * h);
+  band.fill(1, 0, Math.max(1, Math.round(h * opts.seedRowRatio)) * w);
+  const seed = skySeedIn(blue, gray, tex, band, [], opts.minSeedCount, opts);
   if (seed === null) return new Uint8Array(fine.width * fine.height);
 
   // シードは1つとは限らない。青空と白い雲のように空が複数の見えを持つ構図では、
@@ -647,13 +613,17 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
     m = morphSquare(m, w, h, opts.closeRadius, 'dilate');
     m = morphSquare(m, w, h, opts.closeRadius, 'erode');
 
-    m = keepTopComponent(m, w, h, opts.minAreaRatio);
+    m = keepTopComponent(m, w, h);
     return fillHoles(m, w, h);
   };
 
   let mask = build();
   for (let round = 0; round < opts.modeRounds; round++) {
-    const extra = nextSkySeed(blue, gray, tex, mask, w, h, seeds, opts);
+    // 2回目以降は、いま空と判った領域の縁を探索範囲にする
+    const rim = morphSquare(mask, w, h, opts.modeReach, 'dilate');
+    for (let i = 0; i < rim.length; i++) if (mask[i]) rim[i] = 0;
+
+    const extra = skySeedIn(blue, gray, tex, rim, seeds, opts.modeMinCount, opts);
     if (extra === null) break;
     seeds.push(extra);
     mask = build();
