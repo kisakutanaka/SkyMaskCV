@@ -13,6 +13,10 @@ import cv2
 import numpy as np
 
 SRC, DST = sys.argv[1], sys.argv[2]
+
+# 出荷物より古いマスクで比較画像を作らない。古い手法の結果を現手法だと思って
+# 見るのが一番危ない事故で、規則を書くより機械で止めるほうが確実（実際に起きた）。
+BUILT = os.path.join(os.path.dirname(__file__), '..', 'dist', 'skyMask.js')
 H = 240                      # 1枚あたりの表示高さ
 TINT = np.array((255, 0, 255), np.float32)   # BGR: 空と判定された領域に乗せる色。空の青や雲の白と紛れない色を選ぶ
 ALPHA = 0.45
@@ -20,6 +24,8 @@ BAR = 18                     # 見出し帯の高さ
 
 os.makedirs(DST, exist_ok=True)
 manifest = json.load(open(f'{SRC}/manifest.json'))
+if os.path.getmtime(f"{SRC}/{manifest[0]['id']}.mask") < os.path.getmtime(BUILT):
+    sys.exit(f'{SRC} のマスクが dist/skyMask.js より古い。先に node tools/masks.mjs {SRC} を走らせること')
 rows = []
 
 for m in manifest:

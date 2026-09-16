@@ -130,6 +130,27 @@ node    tools/masks.mjs  tools/out/val
 python3 tools/compare.py tools/out/val tools/out/compare/val
 ```
 
+### 出力の置き場所
+
+```
+tools/out/
+  val/ train/ scenes/   .bin .gt .mask manifest.json の4種だけ
+  compare/{val,train,scenes}/
+  preview/              採否の根拠になった画像だけ。番号は採用の時系列
+  preview/old/          途中経過・却下した手法。見なくてよい
+```
+
+- **split ディレクトリに置いてよいのは上の4種だけ。** 作るのは
+  `prep.py` / `gt.py` / `masks.mjs` の3本に限る。
+  実験の使い捨て出力は**スクラッチパッドに書き、`tools/out` に混ぜない**。
+  一度これを破って `.c1` `.d1` `.e1` `.w_a` `.base` … が同じ階層に溜まり、
+  **正式な `.mask` が一番古く使い捨てが一番新しい**という逆転が起きた。
+  どれが現手法か分からなくなり、比較画像は2世代前の結果を映していた。
+- **ディレクトリ名は split 名のまま。** `all_val` のような別名を作ると
+  この手順書と食い違う。
+- `compare.py` は `.mask` が `dist/skyMask.js` より古ければ止まる。
+  古い結果を現手法だと思って見る事故は、規則より機械で止める。
+
 評価は**出荷している `dist/skyMask.js` をそのまま走らせる**。
 参照実装を別に持つと実装ドリフトが起きる。
 
