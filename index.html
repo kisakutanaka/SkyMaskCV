@@ -3,19 +3,25 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SkyMask</title>
 <style>
+  :root { --gutter: 8px; }
   body { margin: 0; background: #111; color: #ddd; font: 13px/1.5 system-ui, sans-serif; }
   header { display: flex; gap: 12px; align-items: center; padding: 8px 12px; flex-wrap: wrap; }
   #stats { font-variant-numeric: tabular-nums; color: #7c7; }
-  .panes { display: flex; gap: 8px; padding: 0 8px 8px; }
+  /* 余白は1か所で持つ。ソロ表示の重ね合わせが同じ値に依存するため。 */
+  .panes { display: flex; gap: var(--gutter); padding: 0 var(--gutter) var(--gutter); position: relative; }
   .pane { flex: 1 1 0; min-width: 0; }
-  /* 見たいのは分離結果のほう。元映像は何を写しているかが分かれば足りるので細くする。 */
-  .panes > .pane:first-child { flex: 0 0 22%; }
-  /* 分離結果のみ。元映像は display:none にせず画面外へ逃がす。video を display:none に
-     すると環境によってフレームの提示が止まり、requestVideoFrameCallback のループが
-     進まなくなるため（動画ソースで ms/frame が出なくなる）。 */
+
+  /* 分離結果のソロ表示。元映像は「消す」のではなく分離結果の真裏に重ねる。
+     video を display:none にしても画面外へ出しても、ブラウザは更新を止めてしまい
+     requestVideoFrameCallback が呼ばれなくなる（動画とカメラで ms/frame が止まる）。
+     画面内に置いたまま不透明なキャンバスで覆えば、更新は続いたまま見えなくなる。
+     元映像と分離結果は同じソース＝同じ幅・同じ縦横比なので過不足なく重なる。 */
   body.solo .panes > .pane:first-child {
-    position: absolute; left: -10000px; top: 0; width: 240px;
+    position: absolute; top: 0; left: var(--gutter); right: var(--gutter); z-index: 0;
   }
+  body.solo .panes > .pane:last-child { position: relative; z-index: 1; }
+  /* 見出しは箱だけ残して文字を消す。display:none にすると高さが変わって重なりがずれる。 */
+  body.solo .panes > .pane:first-child h2 { visibility: hidden; }
   .pane h2 { margin: 0 0 4px; font-size: 12px; font-weight: 400; color: #888; }
   video, img, canvas { width: 100%; display: block; background: #000; }
   /* 作者スタイルの display:block が UA の [hidden]{display:none} を打ち消すので明示する */
