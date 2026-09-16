@@ -327,6 +327,46 @@ export function classifyBySeed(
 }
 
 /**
+ * 空のモードをもう1つ見つける。見つからなければ `null`。
+ *
+ * 空は必ずしも1つの見えでは表せない。青空に白い雲が浮かぶ構図では、
+ * 青空（実測 輝度113 / 青優勢度0.37）と雲（輝度189 / 0.07）が離れすぎていて、
+ * 1組の許容値では同時に囲えない。実測（1b8d1d161bf4396b）では雲の局所σは
+ * 0.033 と滑らかで、落としているのは箱そのものだった。
+ *
+ * そこで「いま空と判った領域の縁に接していて、滑らかで、どのシードの箱にも
+ * 入らない」画素を集め、その中央値を次のシードにする。縁に接していることを
+ * 求めるのは、空と地続きでない明るい面（白い壁など）を拾わないため。
+ *
+ * これを数回繰り返すと、値の空間を段階的に歩いて雲まで届く。実測では3回で
+ * 収束した。歩ける距離に上限は設けていない。霞んだ街並みや青いガラスの
+ * ビルのように空と構造物が実際に混ざっている構図では歩きすぎるが、
+ * そこは元々分離できない領域として許容している。
+ */
+export function nextSkySeed(
+  blue: Float32Array, gray: Float32Array, tex: Float32Array,
+  mask: Uint8Array, width: number, height: number,
+  seeds: readonly SkySeed[],
+  opts: { modeReach: number; modeMinCount: number; texMaxRel: number; bdTol: number; vTol: number },
+): SkySeed | null {
+  const near = morphSquare(mask, width, height, opts.modeReach, 'dilate');
+
+  const blues: number[] = [];
+  const grays: number[] = [];
+  for (let i = 0; i < mask.length; i++) {
+    if (!near[i] || mask[i]) continue;
+    if (tex[i] / (gray[i] + 1) >= opts.texMaxRel) continue;
+    const known = seeds.some((s) => Math.abs(blue[i] - s.blue) < opts.bdTol
+                                 && Math.abs(gray[i] - s.gray) < opts.vTol);
+    if (known) continue;
+    blues.push(blue[i]);
+    grays.push(gray[i]);
+  }
+  if (blues.length < opts.modeMinCount) return null;
+  return { blue: median(blues), gray: median(grays) };
+}
+
+/**
  * 画面上端に接する十分大きな連結成分だけを残す。
  *
  * 判定は画素ごとに独立なので、空と同じ色・輝度・滑らかさを持つ地上の領域
@@ -532,6 +572,19 @@ export interface SkyMaskOptions {
    * 粗パスのクロージングが建物側にはみ出した分を戻す経路を残すため。
    */
   keepTol: number;
+  /** 次のモードを探す範囲。マスクの縁から粗解像度で何画素まで見るか */
+  modeReach: number;
+  /**
+   * 次のモードを認めるのに必要な候補画素数。
+   *
+   * `minSeedCount` と分けてあるのは、雲の縁は遷移部で局所σが上がって滑らかさの
+   * 条件を落ちるため、候補が数十画素しか残らないことがあるから。実測の
+   * 1b8d1d161bf4396b では候補が22画素で、50 だと第2モードが作られず
+   * 雲が取れないままだった（IoU 0.599 → 20 にすると 0.871）。
+   */
+  modeMinCount: number;
+  /** モードを継ぎ足す最大回数。実測では3回で収束した */
+  modeRounds: number;
 }
 
 export const DEFAULT_OPTIONS: SkyMaskOptions = {
@@ -546,6 +599,9 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   minAreaRatio: 0.01,
   bandRadius: 4,
   keepTol: 2.0,
+  modeReach: 4,
+  modeMinCount: 20,
+  modeRounds: 3,
 };
 
 /**
@@ -572,19 +628,40 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
   const seed = estimateSkySeed(blue, gray, tex, w, h, opts);
   if (seed === null) return new Uint8Array(fine.width * fine.height);
 
-  let mask = classifyBySeed(blue, gray, tex, seed, opts);
+  // シードは1つとは限らない。青空と白い雲のように空が複数の見えを持つ構図では、
+  // 空と地続きの領域から次のモードを拾って足していく（nextSkySeed）。
+  const seeds: SkySeed[] = [seed];
 
-  // オープニングが先。逆順にすると孤立ノイズが膨張で周囲と繋がり、
-  // 落とせない構造になったうえ keepTopComponent で空本体と地続きになる。
-  mask = morphSquare(mask, w, h, opts.openRadius, 'erode');
-  mask = morphSquare(mask, w, h, opts.openRadius, 'dilate');
-  mask = morphSquare(mask, w, h, opts.closeRadius, 'dilate');
-  mask = morphSquare(mask, w, h, opts.closeRadius, 'erode');
+  const build = (): Uint8Array => {
+    // 判定規則は classifyBySeed に置いたまま、シードごとに呼んで重ねる。
+    let m = classifyBySeed(blue, gray, tex, seeds[0], opts);
+    for (let k = 1; k < seeds.length; k++) {
+      const part = classifyBySeed(blue, gray, tex, seeds[k], opts);
+      for (let i = 0; i < m.length; i++) if (part[i]) m[i] = 1;
+    }
 
-  mask = keepTopComponent(mask, w, h, opts.minAreaRatio);
-  mask = fillHoles(mask, w, h);
+    // オープニングが先。逆順にすると孤立ノイズが膨張で周囲と繋がり、
+    // 落とせない構造になったうえ keepTopComponent で空本体と地続きになる。
+    m = morphSquare(m, w, h, opts.openRadius, 'erode');
+    m = morphSquare(m, w, h, opts.openRadius, 'dilate');
+    m = morphSquare(m, w, h, opts.closeRadius, 'dilate');
+    m = morphSquare(m, w, h, opts.closeRadius, 'erode');
 
-  // 精緻化パス: 境界だけを実画素に乗せ直す
+    m = keepTopComponent(m, w, h, opts.minAreaRatio);
+    return fillHoles(m, w, h);
+  };
+
+  let mask = build();
+  for (let round = 0; round < opts.modeRounds; round++) {
+    const extra = nextSkySeed(blue, gray, tex, mask, w, h, seeds, opts);
+    if (extra === null) break;
+    seeds.push(extra);
+    mask = build();
+  }
+
+  // 精緻化パス: 境界だけを実画素に乗せ直す。
+  // シードは第1モードだけを渡す。追加モードの領域は帯の中で許容外に出るが、
+  // keepTol のヒステリシスが粗マスクの判断を保つので削られない。
   let fineMask = refineBoundary(fine, mask, w, h, seed, opts);
 
   // 緩い判定が残した孤立画素を落とす。2回かけると open(1) より綺麗で
