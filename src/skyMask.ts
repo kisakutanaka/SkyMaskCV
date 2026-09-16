@@ -175,31 +175,37 @@ export function morphSquare(
   mask: Uint8Array, width: number, height: number, radius: number, mode: MorphMode,
 ): Uint8Array {
   const dilate = mode === 'dilate';
+  const span = 2 * radius + 1;
   const tmp = new Uint8Array(width * height);
   const out = new Uint8Array(width * height);
+  // 走査線ごとの累積和。窓の合計を差で取るので半径に依存しない。
+  const sum = new Int32Array(Math.max(width, height) + 1);
 
   // 横パス
   for (let y = 0; y < height; y++) {
     const row = y * width;
+    for (let x = 0; x < width; x++) sum[x + 1] = sum[x] + mask[row + x];
+    const left = mask[row];
+    const right = mask[row + width - 1];
     for (let x = 0; x < width; x++) {
-      let v = dilate ? 0 : 1;
-      for (let k = -radius; k <= radius; k++) {
-        const s = mask[row + clamp(x + k, width)];
-        v = dilate ? (v | s) : (v & s);
-      }
-      tmp[row + x] = v;
+      // 範囲外は端の値が続くものとして数える（clamp と同じ扱い）
+      const lo = x - radius, hi = x + radius;
+      const inner = sum[hi < width ? hi + 1 : width] - sum[lo > 0 ? lo : 0];
+      const total = inner + (lo < 0 ? -lo * left : 0) + (hi > width - 1 ? (hi - width + 1) * right : 0);
+      tmp[row + x] = (dilate ? total > 0 : total === span) ? 1 : 0;
     }
   }
 
   // 縦パス
   for (let x = 0; x < width; x++) {
+    for (let y = 0; y < height; y++) sum[y + 1] = sum[y] + tmp[y * width + x];
+    const top = tmp[x];
+    const bottom = tmp[(height - 1) * width + x];
     for (let y = 0; y < height; y++) {
-      let v = dilate ? 0 : 1;
-      for (let k = -radius; k <= radius; k++) {
-        const s = tmp[clamp(y + k, height) * width + x];
-        v = dilate ? (v | s) : (v & s);
-      }
-      out[y * width + x] = v;
+      const lo = y - radius, hi = y + radius;
+      const inner = sum[hi < height ? hi + 1 : height] - sum[lo > 0 ? lo : 0];
+      const total = inner + (lo < 0 ? -lo * top : 0) + (hi > height - 1 ? (hi - height + 1) * bottom : 0);
+      out[y * width + x] = (dilate ? total > 0 : total === span) ? 1 : 0;
     }
   }
 
