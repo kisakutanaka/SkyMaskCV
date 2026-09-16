@@ -134,6 +134,7 @@ python3 tools/compare.py tools/out/val tools/out/compare/val
 tools/out/
   val/ train/ scenes/   .bin .gt .mask manifest.json の4種だけ
   compare/{val,train,scenes}/
+  steps/                パイプラインを1段ずつ開いた解説ページ（tools/steps.py）
   preview/              採否の根拠になった画像だけ。番号は採用の時系列
   preview/old/          途中経過・却下した手法。見なくてよい
 ```
@@ -148,6 +149,14 @@ tools/out/
   この手順書と食い違う。
 - `compare.py` は `.mask` が `dist/skyMask.js` より古ければ止まる。
   古い結果を現手法だと思って見る事故は、規則より機械で止める。
+- `steps.mjs` は skyMask.ts を触らず公開関数を同じ順で呼び直すが、
+  最後に `segmentSky` と1バイト単位で一致することを検証して異常終了する。
+  可視化のためであっても参照実装を持たない、という原則は曲げない。
+
+```sh
+node     tools/steps.mjs tools/out/scenes cloudy01 /tmp/s1 '曇天'
+python3  tools/steps.py  tools/out/steps /tmp/s1 ...
+```
 
 評価は**出荷している `dist/skyMask.js` をそのまま走らせる**。
 参照実装を別に持つと実装ドリフトが起きる。
