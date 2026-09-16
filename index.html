@@ -8,6 +8,8 @@
   #stats { font-variant-numeric: tabular-nums; color: #7c7; }
   .panes { display: flex; gap: 8px; padding: 0 8px 8px; }
   .pane { flex: 1 1 0; min-width: 0; }
+  /* 見たいのは分離結果のほう。元映像は何を写しているかが分かれば足りるので細くする。 */
+  .panes > .pane:first-child { flex: 0 0 22%; }
   .pane h2 { margin: 0 0 4px; font-size: 12px; font-weight: 400; color: #888; }
   video, img, canvas { width: 100%; display: block; background: #000; }
   /* 作者スタイルの display:block が UA の [hidden]{display:none} を打ち消すので明示する */
