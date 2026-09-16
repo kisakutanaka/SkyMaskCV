@@ -438,12 +438,20 @@ export function fillHoles(mask: Uint8Array, width: number, height: number): Uint
  *
  * 判定には粗パスと同じ `seed` と同じ規則を使う。局所σは渡さない
  * （連結性は確定済みで、高解像度で計算する価値がない）。
+ *
+ * ただし覆す方向で許容値を変える（ヒステリシス）。帯の中は形状処理を通さず
+ * 生の判定をそのまま採用するため、雲や空の諧調で許容値を外れた画素が
+ * そのまま境界になる。実測（val 335枚）では方向で精度がまるで違う:
+ *   非空→空 の覆し 718,856件 … 81.8% が正しい
+ *   空→非空 の覆し  25,842件 … 38.5% しか正しくない
+ * そこで空を削るほうにだけ `keepTol` 倍の強い証拠を要求する。建物は倍にしても
+ * 許容外に出るので、稜線に吸着する働きは保たれる。
  */
 export function refineBoundary(
   fine: Image,
   coarse: Uint8Array, coarseW: number, coarseH: number,
   seed: SkySeed,
-  opts: { bandRadius: number; bdTol: number; vTol: number; texMaxRel: number },
+  opts: { bandRadius: number; bdTol: number; vTol: number; texMaxRel: number; keepTol: number },
 ): Uint8Array {
   // 帯は粗解像度で作ってから引き伸ばす。高解像度で膨張・収縮するより安い。
   const grown = morphSquare(coarse, coarseW, coarseH, opts.bandRadius, 'dilate');
@@ -458,9 +466,17 @@ export function refineBoundary(
   const blue = blueDominance(fine);
   const gray = toGray(fine);
   const fresh = classifyBySeed(blue, gray, null, seed, opts);
+  // 粗マスクが既に空と言っている画素はこちらで見る。判定規則は
+  // `classifyBySeed` に置いたまま、許容値だけ差し替えて2回呼ぶ。
+  const keep = classifyBySeed(blue, gray, null, seed, {
+    ...opts, bdTol: opts.bdTol * opts.keepTol, vTol: opts.vTol * opts.keepTol,
+  });
 
   const out = new Uint8Array(fine.width * fine.height);
-  for (let i = 0; i < out.length; i++) out[i] = fineBand[i] ? fresh[i] : fineBase[i];
+  for (let i = 0; i < out.length; i++) {
+    if (!fineBand[i]) { out[i] = fineBase[i]; continue; }
+    out[i] = fineBase[i] ? keep[i] : fresh[i];
+  }
 
   return out;
 }
@@ -507,6 +523,15 @@ export interface SkyMaskOptions {
    * 実測: bandRadius=2 だと境界画素の 33〜47% が未精緻化、4 で 3〜8% に落ちる。
    */
   bandRadius: number;
+  /**
+   * 境界帯で「空を維持する側」の許容値の倍率。
+   *
+   * 1 にすると両方向が同じ基準になり、雲の縁や空の諧調で境界が切れる。
+   * 1.5〜∞ で集計指標はほぼ動かない（削る覆しは帯の 1% しかなく IoU に
+   * 出ない）ので、効くのは見た目のほう。∞（絶対に削らない）にしないのは、
+   * 粗パスのクロージングが建物側にはみ出した分を戻す経路を残すため。
+   */
+  keepTol: number;
 }
 
 export const DEFAULT_OPTIONS: SkyMaskOptions = {
@@ -520,6 +545,7 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   closeRadius: 4,
   minAreaRatio: 0.01,
   bandRadius: 4,
+  keepTol: 2.0,
 };
 
 /**
