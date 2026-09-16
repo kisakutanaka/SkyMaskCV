@@ -171,45 +171,51 @@ export type MorphMode = 'erode' | 'dilate';
  *   クロージング  = dilate → erode : 小さな切れ込みや穴を埋める（街灯の光芒対策）
  * どちらも面積をおおむね保ったまま形だけを整えるのが要点。
  */
+/**
+ * 1方向だけの収縮/膨張。窓の合計を累積和の差で取るので半径に依存しない。
+ * 範囲外は端の値が続くものとして数える。
+ */
+function morphAxis(
+  src: Uint8Array, width: number, height: number, radius: number,
+  dilate: boolean, horizontal: boolean,
+): Uint8Array {
+  const span = 2 * radius + 1;
+  const out = new Uint8Array(width * height);
+  const outer = horizontal ? height : width;
+  const inner = horizontal ? width : height;
+  const step = horizontal ? 1 : width;
+  const sum = new Int32Array(inner + 1);
+
+  for (let o = 0; o < outer; o++) {
+    const base = horizontal ? o * width : o;
+    for (let i = 0; i < inner; i++) sum[i + 1] = sum[i] + src[base + i * step];
+    const first = src[base];
+    const last = src[base + (inner - 1) * step];
+    for (let i = 0; i < inner; i++) {
+      const lo = i - radius, hi = i + radius;
+      let total = sum[hi < inner ? hi + 1 : inner] - sum[lo > 0 ? lo : 0];
+      if (lo < 0) total += -lo * first;
+      if (hi > inner - 1) total += (hi - inner + 1) * last;
+      out[base + i * step] = (dilate ? total > 0 : total === span) ? 1 : 0;
+    }
+  }
+  return out;
+}
+
+/** 1方向のオープニング（収縮→膨張）。その向きに長く伸びた構造だけが残る。 */
+function openAxis(
+  src: Uint8Array, width: number, height: number, radius: number, horizontal: boolean,
+): Uint8Array {
+  return morphAxis(morphAxis(src, width, height, radius, false, horizontal),
+                   width, height, radius, true, horizontal);
+}
+
 export function morphSquare(
   mask: Uint8Array, width: number, height: number, radius: number, mode: MorphMode,
 ): Uint8Array {
   const dilate = mode === 'dilate';
-  const span = 2 * radius + 1;
-  const tmp = new Uint8Array(width * height);
-  const out = new Uint8Array(width * height);
-  // 走査線ごとの累積和。窓の合計を差で取るので半径に依存しない。
-  const sum = new Int32Array(Math.max(width, height) + 1);
-
-  // 横パス
-  for (let y = 0; y < height; y++) {
-    const row = y * width;
-    for (let x = 0; x < width; x++) sum[x + 1] = sum[x] + mask[row + x];
-    const left = mask[row];
-    const right = mask[row + width - 1];
-    for (let x = 0; x < width; x++) {
-      // 範囲外は端の値が続くものとして数える（clamp と同じ扱い）
-      const lo = x - radius, hi = x + radius;
-      const inner = sum[hi < width ? hi + 1 : width] - sum[lo > 0 ? lo : 0];
-      const total = inner + (lo < 0 ? -lo * left : 0) + (hi > width - 1 ? (hi - width + 1) * right : 0);
-      tmp[row + x] = (dilate ? total > 0 : total === span) ? 1 : 0;
-    }
-  }
-
-  // 縦パス
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) sum[y + 1] = sum[y] + tmp[y * width + x];
-    const top = tmp[x];
-    const bottom = tmp[(height - 1) * width + x];
-    for (let y = 0; y < height; y++) {
-      const lo = y - radius, hi = y + radius;
-      const inner = sum[hi < height ? hi + 1 : height] - sum[lo > 0 ? lo : 0];
-      const total = inner + (lo < 0 ? -lo * top : 0) + (hi > height - 1 ? (hi - height + 1) * bottom : 0);
-      out[y * width + x] = (dilate ? total > 0 : total === span) ? 1 : 0;
-    }
-  }
-
-  return out;
+  return morphAxis(morphAxis(mask, width, height, radius, dilate, true),
+                   width, height, radius, dilate, false);
 }
 
 /**
@@ -339,6 +345,44 @@ export function classifyBySeed(
     out[i] = nearColour && nearValue && smooth ? 1 : 0;
   }
 
+  return out;
+}
+
+/**
+ * 人工物の輪郭に出る直線を拾う。空の判定から差し引くために使う。
+ *
+ * 直線性は局所σとは独立した手がかりになる。実測（val 200枚）では検出された
+ * 直線の 85.8% が建物の上にあり、雲の縁に乗るのは 3.2% だけだった。σ では
+ * 雲の縁（中央値 0.077）と建物の縁（0.230）が重なって分けられなかったが、
+ * 直線性なら分かれる。
+ *
+ * 勾配を2値化し、縦横それぞれの向きにオープニングをかける。その向きに
+ * 長く伸びた構造だけが残り、雲のような曲がった輪郭は落ちる。
+ * 斜め方向の棒も試したが結果は変わらなかったので入れていない。
+ *
+ * 注意: これは 0°/90° に近い線しか拾わない。浅い角度（実測15°）の稜線は
+ * どの棒にも収まらず取りこぼす。エッジを太らせれば拾えるが、val で悪化が
+ * 改善を上回った（改善42/悪化50、最悪 -0.411）ので採っていない。
+ */
+export function straightEdges(
+  gray: Float32Array, width: number, height: number,
+  opts: { edgeMin: number; edgeLen: number },
+): Uint8Array {
+  const edge = new Uint8Array(width * height);
+  for (let y = 1; y < height - 1; y++) {
+    for (let x = 1; x < width - 1; x++) {
+      const i = y * width + x;
+      const gx = Math.abs(gray[i + 1] - gray[i - 1]);
+      const gy = Math.abs(gray[i + width] - gray[i - width]);
+      edge[i] = gx + gy > opts.edgeMin ? 1 : 0;
+    }
+  }
+
+  const horizontal = openAxis(edge, width, height, opts.edgeLen, true);
+  const vertical = openAxis(edge, width, height, opts.edgeLen, false);
+
+  const out = new Uint8Array(width * height);
+  for (let i = 0; i < out.length; i++) out[i] = horizontal[i] | vertical[i];
   return out;
 }
 
@@ -555,6 +599,10 @@ export interface SkyMaskOptions {
   modeMinCount: number;
   /** モードを継ぎ足す最大回数。実測では3回で収束した */
   modeRounds: number;
+  /** この勾配を超えた画素を輪郭の候補にする */
+  edgeMin: number;
+  /** 直線と見なすのに必要な長さ（半径）。これより短い輪郭は落ちる */
+  edgeLen: number;
 }
 
 export const DEFAULT_OPTIONS: SkyMaskOptions = {
@@ -571,6 +619,8 @@ export const DEFAULT_OPTIONS: SkyMaskOptions = {
   modeReach: 4,
   modeMinCount: 20,
   modeRounds: 3,
+  edgeMin: 20.0,
+  edgeLen: 6,
 };
 
 /**
@@ -603,6 +653,7 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
   // シードは1つとは限らない。青空と白い雲のように空が複数の見えを持つ構図では、
   // 空と地続きの領域から次のモードを拾って足していく（nextSkySeed）。
   const seeds: SkySeed[] = [seed];
+  const walls = straightEdges(gray, w, h, opts);
 
   const build = (): Uint8Array => {
     // 判定規則は classifyBySeed に置いたまま、シードごとに呼んで重ねる。
@@ -620,7 +671,12 @@ export function segmentSky(fine: Image, options: Partial<SkyMaskOptions> = {}): 
     m = morphSquare(m, w, h, opts.closeRadius, 'erode');
 
     m = keepTopComponent(m, w, h);
-    return fillHoles(m, w, h);
+    m = fillHoles(m, w, h);
+
+    // 直線を差し引くのは最後。判定の直後に引くと、クロージングが細い切れ込みを
+    // 埋め戻し、fillHoles が囲まれた穴を塞いでしまう（実測で出力が変わらなかった）。
+    for (let i = 0; i < m.length; i++) if (walls[i]) m[i] = 0;
+    return m;
   };
 
   let mask = build();
