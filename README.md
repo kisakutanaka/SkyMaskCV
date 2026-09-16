@@ -117,6 +117,42 @@ node    tools/eval.mjs     tools/out/val      # dist/skyMask.js を走らせて�
 **Python で再実装せず、出荷している `dist/skyMask.js` をそのまま走らせます。**
 参照実装を別に持つと実装ドリフトが起きるためです。
 
+### 回帰セット（`img/` の元素材）
+
+`img/` の素材自身にもラベルを起こしてあり、これが回帰テストになります。
+データセットの平均は「空が大きく写った易しい画像」に支配されるため、
+**データセットの mIoU が上がっても、このアプリが狙うシーンで劣化していないか**を
+別に確認する必要があります。
+
+| | mIoU | 適合率 | 再現率 |
+|---|---|---|---|
+| 回帰セット 19枚 | 0.921 | 0.965 | 0.951 |
+| cloudy01 / cloudy02 | 0.988 / 0.990 | | |
+| 動画 前半 f000–f120 | 0.970 – 0.984 | | |
+| 動画 後半 f140–f320 | 0.789 – 0.895 | | |
+
+弱いのは動画の後半、カメラがパンして構図が変わる区間です（最悪は f240 の 0.789）。
+
+ラベルは隣の SkySegmentation リポジトリの U-2-Net 教師で起こします。
+`img/` から作り直す手順:
+
+```sh
+# 静止画2枚と動画の20フレームおきを dataset/images/scenes/ に書き出す
+python3 tools/scenes.py
+# 教師モデルでラベルを起こす（19枚で約20秒）
+../SkySegmentation/tools/.venv/bin/python \
+  ../SkySegmentation/tools/pseudo_label_skyseg.py \
+  ../SkySegmentation/dataset/skyseg.onnx \
+  dataset/images/scenes dataset/labels_skyseg/scenes
+# 採点
+python3 tools/prep.py scenes tools/out/scenes
+python3 tools/gt.py   scenes tools/out/scenes
+node    tools/eval.mjs      tools/out/scenes
+```
+
+**ラベルは人手の正解ではなく教師モデルの擬似ラベルです。**
+教師自身の誤りは含まれるので、絶対値ではなく変更前後の差を見る用途に使います。
+
 ## 既知の限界
 
 - 空が画面上端に接していることを前提にしている。シードが取れなければ空マスクは
