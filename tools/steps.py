@@ -92,6 +92,8 @@ def section(meta, rows, first):
         o.append(f'<header><span class="idx">{i:02d}</span>'
                  f'<span class="phase">{phase}</span>'
                  f'<h3>{html.escape(s["label"])}</h3></header>')
+        if s.get('purpose'):
+            o.append(f'<p class="purpose"><span>目的</span>{html.escape(s["purpose"])}</p>')
         o.append('<div class="plates">')
         for k, (path, cap) in enumerate(imgs):
             role = '結果' if k == 0 or s['kind'] != 'mask' else '前の段との差分'
@@ -131,6 +133,7 @@ body{background:var(--ground);color:var(--text);
 .mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;}
 h1{font-size:30px;line-height:1.35;margin:0 0 10px;font-weight:700;text-wrap:balance;letter-spacing:.01em;}
 .lede{color:var(--muted);margin:0 0 32px;max-width:62ch;}
+.lede strong{color:var(--text);font-weight:500;}
 h2{font-size:19px;margin:0 0 12px;font-weight:700;}
 .intro{background:var(--surface);border:1px solid var(--rule);border-radius:10px;
   padding:22px 22px 6px;margin:0 0 36px;}
@@ -152,6 +155,10 @@ td b{color:var(--accent);}
 .phase{font-size:10.5px;letter-spacing:.1em;color:var(--accent);border:1px solid var(--rule);
   border-radius:4px;padding:1px 7px;}
 .stage h3{font-size:17px;margin:0;font-weight:700;flex:1 1 240px;}
+.purpose{display:flex;gap:10px;align-items:baseline;margin:0 0 14px;font-size:14.5px;
+  color:var(--text);border-left:2px solid var(--accent);padding-left:12px;max-width:74ch;}
+.purpose span{flex:0 0 auto;font-size:10.5px;letter-spacing:.1em;color:var(--accent);
+  transform:translateY(-1px);}
 .plates{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,480px));gap:12px;}
 figure{margin:0;}
 figure img{width:100%;display:block;background:var(--plate);border-radius:6px;border:1px solid var(--rule);}
@@ -186,7 +193,9 @@ with open(f'{DST}/index.html', 'w', encoding='utf-8') as fp:
     fp.write(f'<style>{CSS}</style>\n<div class="wrap">\n')
     fp.write('<h1>空マスクができるまで</h1>\n')
     fp.write('<p class="lede">CNN を使わず、色・輝度・ざらつきの3つの手がかりだけで空を切り出しています。'
-             '1フレームぶんの処理を、途中の絵をぜんぶ開いて1段ずつ追いかけます。</p>\n')
+             '1フレームぶんの処理を、途中の絵をぜんぶ開いて1段ずつ追いかけます。'
+             '各段には<strong>その段が何のためにあるか（目的）</strong>と、'
+             'なぜそう作ったかの説明を付けてあります。</p>\n')
     fp.write(f'<div class="intro"><h2>なぜ固定しきい値ではだめなのか</h2>{CUES}</div>\n')
     fp.write('<div class="key">'
              '<i><span class="sw" style="background:#D45BB8"></span>空と判定された領域</i>'

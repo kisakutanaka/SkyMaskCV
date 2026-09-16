@@ -20,6 +20,30 @@ const buf = readFileSync(`${dir}/${id}.bin`);
 const fine = { data: new Uint8ClampedArray(buf.buffer, buf.byteOffset, buf.length), width: fw, height: fh };
 
 const opts = S.DEFAULT_OPTIONS;
+
+// 各段が「何のためにあるか」。1か所にまとめておくと、パイプライン全体の目次になる。
+// 各段の説明（note）は「なぜそうしたか」を書く場所で、こちらは「何のため」。
+const PURPOSE = {
+  src:      '以降はこの1枚だけを見る。縮小と拡大は GPU に任せ、TS が触る画素を減らす',
+  blue:     '色で空を見分けるための軸を作る',
+  gray:     '明るさで空を見分けるための軸を作る',
+  rel:      'ざらつきで空と地物を分けるための軸を作る',
+  seed:     'このシーンの空が「どう見えているか」を決める。以降の判定はすべてここが基準',
+  walls:    '人工物の輪郭を拾っておく。使うのは形状処理が終わったあと',
+  classify: 'シードに似た画素を空の候補にする',
+  open:     '候補に混ざった孤立ノイズを落とす',
+  close:    '空に入った細い切れ込みを埋め、ばらけた候補を1枚の面にする',
+  top:      '空と地続きでない「空っぽく見える面」を捨てる',
+  holes:    '空の中に空いた穴を埋め、面として閉じる',
+  wall:     '人工物の輪郭ぶんを削り、マスクの縁を実物に寄せる',
+  mode:     '1組の代表値では表せない空（青空と白い雲）を継ぎ足す',
+  rim:      '継ぎ足せる空がもう無いことを確かめて打ち切る',
+  band:     '引き直す範囲を境界の周りだけに絞る。全面を実解像度でやると高い',
+  refine:   '粗い階段状の境界を、実画素の稜線に乗せる',
+  final:    '孤立画素を消す。静止画では目立たないが映像ではちらつきに見える',
+};
+const purposeOf = (key) => PURPOSE[key] ?? PURPOSE[key.replace(/\d+$/, '')] ?? '';
+
 const steps = [];
 /** 1段を書き出す。kind: 'field'（連続値）| 'mask'（0/1）。scale は粗解像度なら 2。 */
 function dump(key, label, note, kind, data, w, h, scale, extra = {}) {
@@ -27,7 +51,7 @@ function dump(key, label, note, kind, data, w, h, scale, extra = {}) {
   writeFileSync(`${out}/${name}.bin`, Buffer.from(
     kind === 'field' ? new Float32Array(data).buffer : Uint8Array.from(data),
   ));
-  steps.push({ name, label, note, kind, w, h, scale, ...extra });
+  steps.push({ name, label, purpose: purposeOf(key), note, kind, w, h, scale, ...extra });
 }
 
 // ---- 粗パス ----
@@ -54,7 +78,7 @@ const band = new Uint8Array(w * h);
 band.fill(1, 0, Math.max(1, Math.round(h * opts.seedRowRatio)) * w);
 const seedPixels = new Uint8Array(w * h);
 for (let i = 0; i < band.length; i++) if (band[i] && rel[i] < opts.texMaxRel) seedPixels[i] = 1;
-const seed = S.skySeedIn(blue, gray, tex, band, [], opts.minSeedCount, opts);
+const seed = S.skySeedIn(blue, gray, tex, band, [], Math.max(1, Math.round(w * h * opts.minSeedRatio)), opts);
 if (seed === null) { console.error('シードが取れなかった'); process.exit(1); }
 
 dump('seed', `シード画素（上端${opts.seedRowRatio * 100}% のうち滑らかなもの）`,
@@ -114,9 +138,9 @@ let mask = m;
 for (let round = 0; round < opts.modeRounds; round++) {
   const rim = S.morphSquare(mask, w, h, opts.modeReach, 'dilate');
   for (let i = 0; i < rim.length; i++) if (mask[i]) rim[i] = 0;
-  const extra = S.skySeedIn(blue, gray, tex, rim, seeds, opts.modeMinCount, opts);
+  const extra = S.skySeedIn(blue, gray, tex, rim, seeds, Math.max(1, Math.round(w * h * opts.modeMinRatio)), opts);
   if (extra === null) {
-    dump(`rim${round + 1}`, `モード探索 ${round + 1}回目: 追加なし`, `いま空と判った領域の縁（半径${opts.modeReach}）を探したが、既知のモードから離れた滑らかな画素が${opts.modeMinCount}個に届かなかった。ここで収束。`,
+    dump(`rim${round + 1}`, `モード探索 ${round + 1}回目: 追加なし`, `いま空と判った領域の縁（半径${opts.modeReach}）を探したが、既知のモードから離れた滑らかな画素が${Math.max(1, Math.round(w * h * opts.modeMinRatio))}個に届かなかった。ここで収束。`,
          'mask', rim, w, h, 2);
     break;
   }
